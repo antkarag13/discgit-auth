@@ -1,0 +1,1 @@
+This is an app where you can monitor stars earning on your repository in github. When someone gives a star to the repository, he automatically earns a role in the server that is spesified in the config file. Also when someone removed a star, he automatically loses his role. It has a build in Mongo database with merged the data from the discord and github oauth. 
