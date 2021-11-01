@@ -1,0 +1,22 @@
+{
+  "name": "discgit-oauth",
+  "description": "This app adds a member of a discord server a spesific role when he/she stars a repository in github!",
+  "version": "1.0.0",
+  "main": "server.js",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.17.1",
+    "express-session": "^1.17.1",
+    "mongoose": "^6.0.12",
+    "passport": "^0.4.1",
+    "passport-discord": "^0.1.4",
+    "passport-github": "^1.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.14"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  }
+}

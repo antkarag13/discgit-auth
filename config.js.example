@@ -1,0 +1,23 @@
+module.exports = {
+    /* Bot Configuration */
+    token: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", // Token of the bot
+    client_id: "123456789012345678", // https://discord.com/developers/applications/{client_id}/oauth2
+    client_secret: "XXXXXXXXXXXXXXXXXX", // https://discord.com/developers/applications/{client_id}/oauth2
+    /* Mongo DB */
+    mongodb: "XXXXXXXXXXXXXXXXXX",
+
+    /* Passport Configuration */
+    passport_secret: "XXXXXXXXXXXXXXXXXX", // Random characters
+
+    /* Github Configuration */
+    github_id: "XXXXXXXXXXXXXXXXXX", // https://github.com/settings/developers
+    github_secret: "XXXXXXXXXXXXXXXXXX", // https://github.com/settings/developers
+
+    /* Guild Configuration */
+    guild_id: "123456789012345678", // The guild ID
+    role_id: "123456789012345678", // The role ID
+
+    /* Express Configuration */
+    hostname: "http://localhost:4000/", // Enter the hostname (Have to include http or https and a / at the end!) If it is localhost include the port!
+    port: "4000" // Enter the express port
+}
