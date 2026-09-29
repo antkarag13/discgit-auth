@@ -4,15 +4,19 @@ const express = require('express'),
   GitHubStrategy = require('passport-github').Strategy,
   DiscordStrategy = require("passport-discord").Strategy,
   mongoose = require('mongoose'),
-  { Client, Intents, MessageEmbed } = require('discord.js'),
-  bodyParser = require('body-parser'),
+  crypto = require('crypto'),
+  { Client, GatewayIntentBits, EmbedBuilder, Events } = require('discord.js'),
   app = express(),
-  client = new Client({ intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MEMBERS] }),
+  client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMembers,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent
+    ]
+  }),
   Users = require('./models/Users'),
   config = require('./config');
-
-let githubData = [];
-let discordData = [];
 
 /* Session Info */
 app.use(session({
@@ -22,14 +26,17 @@ app.use(session({
   cookie: {
     httpOnly: true,
     secure: false,
-    maxAge: 1000,
+    maxAge: 1000 * 60 * 60, // 1 hour
   },
 })
 );
 
 app.use(passport.initialize());
 app.use(passport.session());
-app.use(bodyParser.urlencoded({ extended: false }))
+// Keep the raw body so GitHub webhook signatures can be verified
+const keepRawBody = (req, res, buf) => { req.rawBody = buf; };
+app.use(express.urlencoded({ extended: false, verify: keepRawBody }));
+app.use(express.json({ verify: keepRawBody }));
 
 passport.serializeUser(function (user, cb) { cb(null, user); });
 passport.deserializeUser(function (id, cb) { cb(null, id); });
@@ -72,9 +79,11 @@ app.get('/login', (req, res) => {
 });
 
 // Logout
-app.get('/logout', checkAuthGithub, checkAuthDiscord, (req, res) => {
-  req.logOut();
-  res.redirect('/');
+app.get('/logout', checkAuthGithub, checkAuthDiscord, (req, res, next) => {
+  req.logout((err) => {
+    if (err) return next(err);
+    res.redirect('/');
+  });
 });
 
 // Auth
@@ -87,55 +96,80 @@ app.get('/auth/github', checkAuthGithub);
 
 /* Callbacks */
 app.get("/auth/discord/callback", passport.authenticate("discord", { failureRedirect: "/login" }), (req, res) => {
-  discordData.push(req.user)
+  // Keep the Discord profile in this user's session; the GitHub login replaces req.user
+  req.session.discordData = req.user;
   res.redirect("/auth/github");
 });
-app.get("/auth/github/callback", passport.authenticate("github", { failureRedirect: "/login" }), async (req, res) => {
-  githubData.push(req.user._json);
-  const targetData = await Users.findOne({ githubid: githubData[0].id });
-  if (!targetData) {
-    const newUsers = new Users({
-      _id: mongoose.Types.ObjectId(),
-      githubUser: githubData[0].login,
-      githubid: githubData[0].id,
-      discordUser: discordData[0].username,
-      discordid: discordData[0].id,
-      githubData: githubData[0],
-      discordData: discordData[0]
-    })
-    newUsers.save()
+app.get("/auth/github/callback", passport.authenticate("github", { failureRedirect: "/login", keepSessionInfo: true }), async (req, res) => {
+  const githubData = req.user._json;
+  const discordData = req.session.discordData;
+  if (!discordData) return res.redirect('/auth/discord');
+
+  try {
+    const targetData = await Users.findOne({ githubid: githubData.id });
+    if (!targetData) {
+      const newUsers = new Users({
+        githubUser: githubData.login,
+        githubid: githubData.id,
+        discordUser: discordData.username,
+        discordid: discordData.id,
+        githubData: githubData,
+        discordData: discordData
+      })
+      await newUsers.save();
+    }
+  } catch (err) {
+    console.error("Unable to save the linked accounts:", err);
+    return res.status(500).send("Unable to link your accounts, please try again.");
   }
-  discordData = [];
-  githubData = [];
+  delete req.session.discordData;
   res.redirect('/');
 });
 
 /* Route that receives a POST request */
+const verifyGithubSignature = (req) => {
+  const signature = req.get('X-Hub-Signature-256');
+  if (!signature || !req.rawBody) return false;
+
+  const expected = 'sha256=' + crypto.createHmac('sha256', config.github_webhook_secret).update(req.rawBody).digest('hex');
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+};
+
 app.post('/github', async (req, res) => {
-  const payload = JSON.parse(req.body.payload);
-  const action = payload.action;
+  if (!config.github_webhook_secret) return res.status(500).send('Webhook secret is not configured');
+  if (!verifyGithubSignature(req)) return res.status(401).send('Invalid signature');
 
-  const userData = await Users.findOne({ githubid: `${payload.sender.id}` });
-  if (userData) {
-    if (action == 'deleted') {
+  res.set('Content-Type', 'text/plain');
+  // Only star events change roles; anything else (e.g. ping) is acknowledged and ignored
+  if (req.get('X-GitHub-Event') !== 'star') return res.send('Ignored');
+
+  try {
+    // GitHub sends either application/json or a form-encoded "payload" field
+    const payload = req.body?.payload ? JSON.parse(req.body.payload) : req.body;
+    const action = payload.action;
+
+    const userData = await Users.findOne({ githubid: `${payload.sender.id}` });
+    if (userData && (action == 'created' || action == 'deleted')) {
       const guild = client.guilds.cache.get(config.guild_id);
-      const member = guild.members.cache.get(userData.discordid);
+      const member = guild && await guild.members.fetch(userData.discordid).catch(() => null);
 
-      if (member.roles.cache.has(config.role_id)) member.roles.remove(config.role_id);
-    } else if (action == 'created') {
-      const guild = client.guilds.cache.get(config.guild_id);
-      const member = guild.members.cache.get(userData.discordid);
-
-      if (!member.roles.cache.has(config.role_id)) member.roles.add(config.role_id);
+      if (member) {
+        if (action == 'deleted' && member.roles.cache.has(config.role_id)) await member.roles.remove(config.role_id);
+        if (action == 'created' && !member.roles.cache.has(config.role_id)) await member.roles.add(config.role_id);
+      }
     }
+  } catch (err) {
+    console.error("Unable to handle the GitHub webhook:", err);
+    return res.status(500).send('Error');
   }
 
-  res.set('Content-Type', 'text/plain')
   res.send(`Received`)
 })
 
 /* Client Ready */
-client.on("ready", () => {
+client.once(Events.ClientReady, () => {
   console.log("===");
   console.log(`Info: Make sure you have added the following url to the discord's OAuth callback url section in the developer portal:\nCallback URL: ${config.hostname}auth/discord/callback\n\nDeveloper Portal: https://discord.com/developers/applications/${client.user.id}/oauth2`);
   console.log("===");
@@ -143,20 +177,18 @@ client.on("ready", () => {
 })
 
 /* Client Message */
-client.on("message", message => {
+client.on(Events.MessageCreate, message => {
+  if (message.author.bot) return;
   if (message.content === "connect") {
-    const embed = new MessageEmbed()
+    const embed = new EmbedBuilder()
       .setDescription(`[Click here!](${config.hostname})`)
 
-    message.channel.send(embed);
+    message.channel.send({ embeds: [embed] });
   }
 })
 
 // Mongoose Connect
-mongoose.connect(config.mongodb, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-}).then(() => {
+mongoose.connect(config.mongodb).then(() => {
   console.log("Connected to the Mongodb database.");
 }).catch((err) => {
   console.log("Unable to connect to the Mongodb database. Error:" + err);
@@ -166,4 +198,4 @@ mongoose.connect(config.mongodb, {
 app.listen(config.port ? config.port : 4000, () => console.log(`Server is up and running on port ${config.port ? config.port : 4000}`));
 
 // Client Login
-client.login(config.token)
+client.login(config.token).catch((err) => console.log("Unable to log in the Discord bot. Error:" + err));

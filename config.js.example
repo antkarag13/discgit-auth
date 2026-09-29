@@ -12,6 +12,7 @@ module.exports = {
     /* Github Configuration */
     github_id: "XXXXXXXXXXXXXXXXXX", // https://github.com/settings/developers
     github_secret: "XXXXXXXXXXXXXXXXXX", // https://github.com/settings/developers
+    github_webhook_secret: "XXXXXXXXXXXXXXXXXX", // The secret set on the repository's webhook (Settings > Webhooks)
 
     /* Guild Configuration */
     guild_id: "123456789012345678", // The guild ID
